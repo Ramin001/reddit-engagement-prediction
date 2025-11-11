@@ -12,8 +12,8 @@ import tensorflow.keras.layers as layers
 import tensorflow.keras.losses as losses
 
 from pprint import pprint
-
-
+# Disable XLA devices to avoid GPU memory issues
+os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
 ###################################################
 # create datasets: training, validation, and test #
 ###################################################
@@ -34,8 +34,10 @@ def split_dataset_into_train_test(file_path, test_ratio=0.1, val_ratio=0.2):
             else: outs[2].write(line)
     for out in outs: out.close()
 
+first_run = not (os.path.exists('train_ds') and os.path.exists('valid_ds') and os.path.exists('test_ds'))
 # split data: 10% test. the rest is randomly split 80-20 between train and validation
-split_dataset_into_train_test(raw_path, test_ratio=0.1, val_ratio=0.2)
+if first_run:
+    split_dataset_into_train_test(raw_path, test_ratio=0.1, val_ratio=0.2)
 
 
 ###################################################
@@ -47,6 +49,11 @@ def reddit_post_generator(file_path):
         for line in f:
             entry = json.loads(line)
             
+            # filter out unwanted columns
+            entry = {k: entry[k] for k in ['title', 'selftext', 'score', 'num_comments', 
+                                           'ups', 'downs', 'num_reports',
+                                           'created', 'created_utc']}
+            
             # clean text columns: fix html elements, lower case, and strip whitespace
             for column in ['title', 'selftext']:
                 if column in entry and isinstance(entry[column], str):
@@ -57,7 +64,7 @@ def reddit_post_generator(file_path):
 
                     
             # clean date columns: convert to timestamps with NaN for missing values
-            for column in ['created', 'created_utc', 'retrieved_on']:
+            for column in ['created', 'created_utc']:
                 if column in entry and entry[column]:
                     try:
                         entry[column] = float(entry[column])  # Convert to float to support NaN
@@ -89,8 +96,7 @@ output_signature = {
     'downs': tf.TensorSpec(shape=(), dtype=tf.float32),
     'num_reports': tf.TensorSpec(shape=(), dtype=tf.float32),
     'created': tf.TensorSpec(shape=(), dtype=tf.float64),
-    'created_utc': tf.TensorSpec(shape=(), dtype=tf.float64),
-    'retrieved_on': tf.TensorSpec(shape=(), dtype=tf.float64)
+    'created_utc': tf.TensorSpec(shape=(), dtype=tf.float64)
 }
 
 # Create the dataset with GPU optimization
@@ -108,7 +114,7 @@ test_ds = tf.data.Dataset.from_generator(
 )
 # Configure the dataset for GPU performance
 AUTOTUNE = tf.data.AUTOTUNE
-BATCH_SIZE = 128 
+BATCH_SIZE = 128
 
 train_ds = train_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
 valid_ds = valid_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
@@ -116,5 +122,79 @@ test_ds = test_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE)
 
 print("Dataset ready for GPU processing with batch size", BATCH_SIZE)
 
+
+###################################################
+# train the model                                 #
+###################################################
+
+# Define text vectorization layers
+max_features = 20000    
+sequence_length = 2
+title_vectorizer = layers.TextVectorization(
+    max_tokens=max_features,
+    output_mode='int',
+    output_sequence_length=sequence_length
+)
+selftext_vectorizer = layers.TextVectorization(
+    max_tokens=max_features,    
+    output_mode='int',
+    output_sequence_length=sequence_length  
+)   
+# Adapt vectorizers to the training data
+title_texts = train_ds.map(lambda x: x['title'])    
+selftext_texts = train_ds.map(lambda x: x['selftext'])
+title_vectorizer.adapt(title_texts)    
+selftext_vectorizer.adapt(selftext_texts)   
+
+#print vocabulary samples
+print("Title vocabulary sample:", title_vectorizer.get_vocabulary()[:20])
+print("Selftext vocabulary sample:", selftext_vectorizer.get_vocabulary()[:20])     
+
+# Define the model architecture
+def build_model(Embedding_dim=64):
+    title_input = layers.Input(shape=(1,), dtype=tf.string, name='title_input') 
+    title_vectorized = title_vectorizer(title_input)
+    title_embedded = layers.Embedding(input_dim=max_features, output_dim=Embedding_dim, name='title_embedding')(title_vectorized)
+
+    selftext_input = layers.Input(shape=(1,), dtype=tf.string, name='selftext_input') 
+    selftext_vectorized = selftext_vectorizer(selftext_input)   
+    selftext_embedded = layers.Embedding(input_dim=max_features, output_dim=Embedding_dim, name='selftext_embedding')(selftext_vectorized)
+    
+    # Combine text features
+    combined = layers.Concatenate(name='concat')([title_embedded, selftext_embedded])
+    x = layers.GlobalAveragePooling1D(name='global_avg_pool')(combined)
+    x = layers.Dense(Embedding_dim, activation='relu', name='dense_1')(x)
+    output = layers.Dense(1, activation='linear', name='output')(x)
+    model = ks.Model(inputs=[title_input, selftext_input], outputs=output)
+    return model
+
+# Build the model
+model = build_model(Embedding_dim=64)
+
+# Compile the model
+model.compile(
+    optimizer='adam',
+    loss=losses.MeanSquaredError(),
+    metrics=['mae']
+)
+summary = model.summary()
+pprint(summary)
+
+###################################################
+# train the model                                 #
+###################################################
+
+history = model.fit(
+    train_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
+    validation_data=valid_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
+    epochs=3
+)
+###################################################
+# evaluate the model                              #     
+###################################################
+eval_results = model.evaluate(
+    test_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score']))
+)
+pprint(eval_results)
 
 
