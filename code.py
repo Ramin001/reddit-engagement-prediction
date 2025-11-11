@@ -14,6 +14,30 @@ import tensorflow.keras.losses as losses
 from pprint import pprint
 
 
+################################################### 
+# create datasets: training, validation, and test #
+###################################################
+file_path = "wallstreetbets_submissions"
+# data is chronological, so take test from the end
+def split_dataset_into_train_test(file_path, test_ratio=0.1, val_ratio=0.2):
+    import random
+    total_lines = sum(1 for _ in open(file_path))
+    nsplit = int(total_lines*(1 - test_ratio))
+    outs = [open('train_ds', 'w', encoding='utf-8'), 
+            open('valid_ds', 'w', encoding='utf-8'),
+            open('test_ds', 'w', encoding='utf-8')]
+    with open(file_path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            r = random.random()
+            if   i < nsplit and r >  0.2: outs[0].write(line)
+            elif i < nsplit and r <= 0.2: outs[1].write(line)
+            else: outs[2].write(line)
+    for out in outs: out.close()
+    
+
+# split data: 10% test. the rest is randomly split 80-20 between train and validation
+split_dataset_into_train_test(file_path, test_ratio=0.1, val_ratio=0.2)
+
 # function to create a keras dataset generator for cleaning reddit data
 def reddit_post_generator(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
@@ -52,9 +76,6 @@ def reddit_post_generator(file_path):
 
             yield entry
 
-# Define the file path
-file_path = "wallstreetbets_submissions"
-
 # Define the output signature for the dataset
 output_signature = {
     'title': tf.TensorSpec(shape=(), dtype=tf.string),
@@ -70,20 +91,20 @@ output_signature = {
 }
 
 # Create the dataset with GPU optimization
-dataset = tf.data.Dataset.from_generator(
-    lambda: reddit_post_generator(file_path),
+train_ds = tf.data.Dataset.from_generator(
+    lambda: reddit_post_generator('train_ds'),
     output_signature=output_signature
 )
-
+test_ds = tf.data.Dataset.from_generator(
+    lambda: reddit_post_generator('test_ds'),
+    output_signature=output_signature
+)
 # Configure the dataset for GPU performance
 AUTOTUNE = tf.data.AUTOTUNE
 BATCH_SIZE = 128 
 
-dataset = dataset.cache()  # Cache the data to memory
-dataset = dataset.batch(BATCH_SIZE)  # Create batches
-dataset = dataset.prefetch(AUTOTUNE)  # Prefetch next batch while GPU is processing
-
-
+train_ds = train_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
+train_ds = train_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
 
 # Look at individual entries directly from the generator to see progress
 print("Reading posts...")
@@ -116,11 +137,5 @@ for entry in reddit_post_generator(file_path):
     
     print("-" * 80)  
     
-
 print("Dataset ready for GPU processing with batch size", BATCH_SIZE)
 
-
-################################################### 
-### split dataset into training, validation, and test sets
-#####################################################
-total_size = 0
