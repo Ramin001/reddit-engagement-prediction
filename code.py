@@ -14,10 +14,10 @@ import tensorflow.keras.losses as losses
 from pprint import pprint
 
 
-################################################### 
+###################################################
 # create datasets: training, validation, and test #
 ###################################################
-file_path = "wallstreetbets_submissions"
+raw_path = "wallstreetbets_submissions"
 # data is chronological, so take test from the end
 def split_dataset_into_train_test(file_path, test_ratio=0.1, val_ratio=0.2):
     import random
@@ -33,11 +33,14 @@ def split_dataset_into_train_test(file_path, test_ratio=0.1, val_ratio=0.2):
             elif i < nsplit and r <= 0.2: outs[1].write(line)
             else: outs[2].write(line)
     for out in outs: out.close()
-    
 
 # split data: 10% test. the rest is randomly split 80-20 between train and validation
-split_dataset_into_train_test(file_path, test_ratio=0.1, val_ratio=0.2)
+split_dataset_into_train_test(raw_path, test_ratio=0.1, val_ratio=0.2)
 
+
+###################################################
+# import data                                     #
+###################################################
 # function to create a keras dataset generator for cleaning reddit data
 def reddit_post_generator(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
@@ -95,6 +98,10 @@ train_ds = tf.data.Dataset.from_generator(
     lambda: reddit_post_generator('train_ds'),
     output_signature=output_signature
 )
+valid_ds = tf.data.Dataset.from_generator(
+    lambda: reddit_post_generator('valid_ds'),
+    output_signature=output_signature
+)
 test_ds = tf.data.Dataset.from_generator(
     lambda: reddit_post_generator('test_ds'),
     output_signature=output_signature
@@ -104,38 +111,10 @@ AUTOTUNE = tf.data.AUTOTUNE
 BATCH_SIZE = 128 
 
 train_ds = train_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
-train_ds = train_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
+valid_ds = valid_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
+test_ds = test_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE)
 
-# Look at individual entries directly from the generator to see progress
-print("Reading posts...")
-count = 0
-for entry in reddit_post_generator(file_path):
-    if count >= 5:  # Only look at first 5 entries
-        break
-        
-    count += 1
-    print(f"\nEntry #{count}:")
-    print("Title:", entry['title'])
-    print("Text:", entry['selftext'][:100] + "..." if len(entry['selftext']) > 100 else "")
-    
-    # Check numeric fields
-    numeric_fields = ['score', 'num_comments', 'ups', 'downs', 'num_reports']
-    print("\nNumeric values:")
-    for field in numeric_fields:
-        value = entry[field]
-        print(f"{field}: {'NaN' if np.isnan(value) else value}")
-    
-    # Check timestamp fields
-    timestamp_fields = ['created', 'created_utc', 'retrieved_on']
-    print("\nTimestamp values:")
-    for field in timestamp_fields:
-        value = entry[field]
-        if np.isnan(value):
-            print(f"{field}: NaN")
-        else:
-            print(f"{field}: {pd.to_datetime(value, unit='s')}")
-    
-    print("-" * 80)  
-    
 print("Dataset ready for GPU processing with batch size", BATCH_SIZE)
+
+
 
