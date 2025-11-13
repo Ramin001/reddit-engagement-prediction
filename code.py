@@ -11,9 +11,10 @@ import tensorflow as tf
 import tensorflow.keras.layers as layers 
 import tensorflow.keras.losses as losses
 
+import matplotlib.pyplot as plt     
 from pprint import pprint
 # Disable XLA devices to avoid GPU memory issues
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
+#os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
 ###################################################
 # create datasets: training, validation, and test #
 ###################################################
@@ -50,9 +51,9 @@ def reddit_post_generator(file_path):
             entry = json.loads(line)
             
             # filter out unwanted columns
-            entry = {k: entry[k] for k in ['title', 'selftext', 'score', 'num_comments', 
+            entry = {k: entry.get(k, float('nan')) for k in ['title', 'selftext', 'score', 'num_comments', 
                                            'ups', 'downs', 'num_reports',
-                                           'created', 'created_utc']}
+                                           'created', 'created_utc', 'retrieved_on']}
             
             # clean text columns: fix html elements, lower case, and strip whitespace
             for column in ['title', 'selftext']:
@@ -64,7 +65,7 @@ def reddit_post_generator(file_path):
 
                     
             # clean date columns: convert to timestamps with NaN for missing values
-            for column in ['created', 'created_utc']:
+            for column in ['created', 'created_utc', 'retrieved_on']:
                 if column in entry and entry[column]:
                     try:
                         entry[column] = float(entry[column])  # Convert to float to support NaN
@@ -95,8 +96,9 @@ output_signature = {
     'ups': tf.TensorSpec(shape=(), dtype=tf.float32),
     'downs': tf.TensorSpec(shape=(), dtype=tf.float32),
     'num_reports': tf.TensorSpec(shape=(), dtype=tf.float32),
-    'created': tf.TensorSpec(shape=(), dtype=tf.float64),
-    'created_utc': tf.TensorSpec(shape=(), dtype=tf.float64)
+    'created': tf.TensorSpec(shape=(), dtype=tf.float32),
+    'created_utc': tf.TensorSpec(shape=(), dtype=tf.float32),
+    'retrieved_on': tf.TensorSpec(shape=(), dtype=tf.float32)
 }
 
 # Create the dataset with GPU optimization
@@ -129,7 +131,7 @@ print("Dataset ready for GPU processing with batch size", BATCH_SIZE)
 
 # Define text vectorization layers
 max_features = 20000    
-sequence_length = 2
+sequence_length = 200
 title_vectorizer = layers.TextVectorization(
     max_tokens=max_features,
     output_mode='int',
@@ -175,7 +177,7 @@ model = build_model(Embedding_dim=64)
 model.compile(
     optimizer='adam',
     loss=losses.MeanSquaredError(),
-    metrics=['mae']
+    metrics=['mse']
 )
 summary = model.summary()
 pprint(summary)
@@ -183,12 +185,12 @@ pprint(summary)
 ###################################################
 # train the model                                 #
 ###################################################
-
-history = model.fit(
-    train_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
-    validation_data=valid_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
-    epochs=3
-)
+with tf.device('/CPU:0'):
+    history = model.fit(
+        train_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
+        validation_data=valid_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
+        epochs=30
+    )
 ###################################################
 # evaluate the model                              #     
 ###################################################
@@ -196,5 +198,15 @@ eval_results = model.evaluate(
     test_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score']))
 )
 pprint(eval_results)
+
+# plot training history
+
+plt.plot(history.history['loss'], label='train_loss')
+plt.plot(history.history['val_loss'], label='val_loss')
+plt.xlabel('Epoch')     
+plt.ylabel('Loss (MSE)')
+plt.legend()
+plt.show()
+
 
 
