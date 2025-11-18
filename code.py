@@ -13,6 +13,9 @@ import tensorflow.keras.losses as losses
 
 import matplotlib.pyplot as plt     
 from pprint import pprint
+
+# Disable XLA JIT compilation
+tf.config.optimizer.set_jit(False) 
 # Disable XLA devices to avoid GPU memory issues
 #os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices=false"
 ###################################################
@@ -116,7 +119,7 @@ test_ds = tf.data.Dataset.from_generator(
 )
 # Configure the dataset for GPU performance
 AUTOTUNE = tf.data.AUTOTUNE
-BATCH_SIZE = 128
+BATCH_SIZE = 32
 
 train_ds = train_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
 valid_ds = valid_ds.cache().batch(BATCH_SIZE).prefetch(AUTOTUNE) 
@@ -131,7 +134,7 @@ print("Dataset ready for GPU processing with batch size", BATCH_SIZE)
 
 # Define text vectorization layers
 max_features = 20000    
-sequence_length = 200
+sequence_length = 100
 title_vectorizer = layers.TextVectorization(
     max_tokens=max_features,
     output_mode='int',
@@ -187,15 +190,15 @@ pprint(summary)
 ###################################################
 with tf.device('/CPU:0'):
     history = model.fit(
-        train_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
-        validation_data=valid_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score'])),
-        epochs=30
+        train_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['num_comments'])),
+        validation_data=valid_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['num_comments'])),
+        epochs=100
     )
 ###################################################
 # evaluate the model                              #     
 ###################################################
 eval_results = model.evaluate(
-    test_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['score']))
+    test_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['num_comments']))
 )
 pprint(eval_results)
 
@@ -207,6 +210,33 @@ plt.xlabel('Epoch')
 plt.ylabel('Loss (MSE)')
 plt.legend()
 plt.show()
+
+###################################################
+# make predictions                                 #    
+###################################################
+for batch in test_ds.take(1):
+    titles = batch['title']
+    selftexts = batch['selftext']
+    true_comments = batch['num_comments']
+    predictions = model.predict({"title_input": titles, "selftext_input": selftexts})
+    for i in range(len(titles)):
+        print(f"Title: {titles[i].numpy().decode('utf-8')}")
+        print(f"Selftext: {selftexts[i].numpy().decode('utf-8')}")
+        print(f"True Comments: {true_comments[i].numpy()}, Predicted Comments: {predictions[i][0]}")
+        print("-----")
+
+# export the model
+model.save('reddit_model.keras')      
+# find where the model is saved
+print("Model saved at:", os.path.abspath('reddit_model.keras'))
+# load the model in the future
+#loaded_model = ks.models.load_model('reddit_model.keras')
+
+# run the model on test data to verify
+test_eval = model.evaluate( 
+   test_ds.map(lambda x: ({"title_input": x['title'], "selftext_input": x['selftext']}, x['num_comments']))
+)
+print("Loaded model evaluation:", test_eval)
 
 
 
